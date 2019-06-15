@@ -48,7 +48,6 @@ torch.backends.cudnn.benchmark = False
 
 opt = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-
 # create datasets /dataloaders
 scale_inv = lambda x : x + 0.5
 ds_transforms = transforms.Compose([transforms.ToTensor(), lambda x : x - 0.5])
@@ -68,8 +67,8 @@ def reset_log():
     return logs
 
 # spawn writer
-model_name = 'LR{}_BS{}_D{}_K{}_hH{}_NC{}_coef{}'.format(args.lr, args.batch_size, args.embed_dim, args.n_embeds, args.hH,
-                                                            args.n_codebooks, args.commit_coef)
+model_name = 'LR{}_BS{}_D{}_K{}_hH{}_NC{}_coef{}'.format(args.lr, args.batch_size, args.embed_dim, args.n_embeds,
+                                                         args.hH, args.n_codebooks, args.commit_coef)
 model_name = 'test' if args.debug else model_name
 log_dir    = join('runs', model_name)
 sample_dir = join(log_dir, 'samples')
@@ -116,14 +115,10 @@ for epoch in range(args.n_epochs):
 
     with torch.no_grad():
         for batch_idx, (input,_) in enumerate(test_loader):
-            model.zero_grad()
-            opt.zero_grad()
             input = input.cuda()
-
             x, latent_loss = model(input)
 
             log_pxz = discretized_logistic(x, model.dec_log_stdv, sample=input).mean()
-            loss = -1 * log_pxz + args.commit_coef * latent_loss
            
             elbo = - (KL - log_pxz) / N
             bpd  = elbo / np.log(2.)
@@ -144,9 +139,3 @@ for epoch in range(args.n_epochs):
     for key, value in test_log.items():
         print_and_log_scalar(writer, 'test/%s' % key, value, epoch)
     print()
-
-
-
-
-
-
