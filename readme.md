@@ -10,14 +10,6 @@ Running the following command gets ~ 5.05 BPD ( Instead of 4.7 / 4.8, as is repo
 python main.py --hH 16 --n_codebooks 2 --embed_dim 256 --n_res_channels 256 --n_channels 256 --batch_size 256 --lr 5e-4
 ```
 
-### Images
-Here are some test set reconstructions, and samples 
-<p align="center">
-<img src="https://github.com/pclucas14/iaf-vae/blob/master/images/test_99.png">
-<img src="https://github.com/pclucas14/iaf-vae/blob/master/images/sample_999.png">
-</p>
-Judging by how good the reconstructions are,  maybe the free bits constraint is too loose. More investigation required.
-
 ### Contribute
 All contributions / comments / remarks are highly welcomed. 
 
