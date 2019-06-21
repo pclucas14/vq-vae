@@ -7,18 +7,27 @@ from torch.nn import functional as F
 # Taken    from https://github.com/rosinality/vq-vae-2-pytorch
 
 class Quantize(nn.Module):
-    def __init__(self, dim, n_embed, decay=0.99, eps=1e-5):
+    def __init__(self, dim, n_embed, ema=True, decay=0.99, eps=1e-5):
         super().__init__()
 
         self.dim = dim
         self.n_embed = n_embed
         self.decay = decay
         self.eps = eps
+        self.ema = ema
 
-        embed = torch.randn(dim, n_embed)
-        self.register_buffer('embed', embed)
-        self.register_buffer('cluster_size', torch.zeros(n_embed))
-        self.register_buffer('embed_avg', embed.clone())
+        if self.ema:
+            embed = torch.randn(dim, n_embed)
+            self.register_buffer('embed', embed)
+            self.register_buffer('cluster_size', torch.zeros(n_embed))
+            self.register_buffer('embed_avg', embed.clone())
+        else:
+            self.register_parameter('embed', nn.Parameter(torch.randn(dim, n_embed)))
+
+    def idx_2_hid(self, ind):
+        ind = ind.view((-1,) + self.shp)
+        quantize = self.embed_code(ind)
+        return quantize 
 
     def forward(self, input):
         flatten = input.reshape(-1, self.dim)
@@ -32,7 +41,9 @@ class Quantize(nn.Module):
         embed_ind = embed_ind.view(*input.shape[:-1])
         quantize = self.embed_code(embed_ind)
 
-        if self.training:
+        self.shp = input.shape[1:-1]
+
+        if self.training and self.ema:
             self.cluster_size.data.mul_(self.decay).add_(
                 1 - self.decay, embed_onehot.sum(0)
             )
@@ -45,10 +56,10 @@ class Quantize(nn.Module):
             embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)
             self.embed.data.copy_(embed_normalized)
 
-        diff = (quantize.detach() - input).pow(2).mean()
+        loss_quant  = (quantize.detach() - input).pow(2).mean()
+        loss_commit = (quantize - input.detach()).pow(2).mean()
         quantize = input + (quantize - input).detach()
-
-        return quantize, diff, embed_ind
+        return quantize, loss_quant, loss_commit, embed_ind
 
     def embed_code(self, embed_id):
         return F.embedding(embed_id, self.embed.transpose(0, 1))
@@ -169,7 +180,8 @@ class VQVAE(nn.Module):
         n_res_channel = args.n_res_channels
         embed_dim = args.embed_dim
         n_embed = args.n_embeds
-        decay = args.decay
+
+        self.ema = args.ema
 
         assert embed_dim % args.n_codebooks == 0, 'you need that last dimension to be evenly divisible by the amt of codebooks'
 
@@ -179,15 +191,15 @@ class VQVAE(nn.Module):
         self.dec = Decoder(embed_dim, in_channel, channel, n_res_block, n_res_channel, stride=args.downsample)
 
         # build the codebooks
-        self.quantize = nn.ModuleList([Quantize(embed_dim // args.n_codebooks, n_embed) for _ in range(args.n_codebooks)])
+        self.quantize = nn.ModuleList([Quantize(embed_dim // args.n_codebooks, n_embed, ema=args.ema, decay=args.gamma) for _ in range(args.n_codebooks)])
         
         self.register_parameter('dec_log_stdv', torch.nn.Parameter(torch.Tensor([0.])))
     
     def forward(self, input):
-        z_q, diff, _ = self.encode(input)
+        z_q, loss_quant, loss_commit, argmins = self.encode(input)
         dec = self.decode(z_q)
 
-        return dec, diff
+        return dec, loss_quant, loss_commit, z_q, argmins
 
     def encode(self, input):
         pre_z_e = self.enc(input)
@@ -197,21 +209,30 @@ class VQVAE(nn.Module):
         z_e_s   = z_e.chunk(len(self.quantize), 1)
 
         z_q_s, argmins = [], []
-        diffs = 0.
+        losses_quant, losses_commit = 0., 0.
         
         for z_e, quantize in zip(z_e_s, self.quantize):
-            z_q, diff, argmin = quantize(z_e.permute(0, 2, 3, 1))
+            z_q, loss_quant, loss_commit, argmin = quantize(z_e.permute(0, 2, 3, 1))
             z_q_s   += [z_q]
             argmins += [argmin]
-            diffs   += diff
-        
+            losses_quant  += loss_quant
+            losses_commit += (0. if self.ema else loss_commit)
+
         z_q = torch.cat(z_q_s, dim=-1)
         z_q = z_q.permute(0, 3, 1, 2)
         
-        return z_q, diffs, argmins
+        return z_q, losses_quant, losses_commit, torch.stack(argmins, dim=1)
 
     def decode(self, quant):
         return self.dec(quant)
+
+    def idx_2_hid(self, indices):
+        z_q_s = []
+        for i in range(len(self.quantize)):
+            idx = indices[:, i]
+            qt  = self.quantize[i]
+            z_q_s += [qt.idx_2_hid(idx)]
+        return torch.cat(z_q_s, dim=-1).permute(0, 3, 1, 2).contiguous()
 
 
 
@@ -281,10 +302,16 @@ class VQVAE_2(nn.Module):
 
         return dec
 
-    def decode_code(self, code_t, code_b):
-        quant_t = self.quantize_t.embed_code(code_t)
-        quant_b = self.quantize_b.embed_code(code_b)
-
-        dec = self.decode(quant_t, quant_b)
+    def decode_top_only(self, quant_t):
+        upsample_t = self.upsample_t(quant_t)
+        quant = torch.cat([upsample_t, upsample_t], 1)
+        dec = self.dec(quant)
 
         return dec
+
+    def decode_bot_only(self, quant_b):
+        quant = torch.cat([quant_b, quant_b], 1)
+        dec = self.dec(quant)
+
+        return dec
+

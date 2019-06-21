@@ -14,9 +14,11 @@ def discretized_logistic(mean, logscale, binsize=1 / 256.0, sample=None):
 def print_and_log_scalar(writer, name, value, write_no, end_token=''):
     if isinstance(value, list):
         if len(value) == 0: return
+        
+        str_tp = str(type(value[0]))
         if type(value[0]) == torch.Tensor:
             value = torch.mean(torch.stack(value))
-        elif 'float' in str(type(value[0])):
+        elif 'float' in str_tp or 'int' in str_tp:
             value = sum(value) / len(value)
     zeros = 40 - len(name) 
     name += ' ' * zeros

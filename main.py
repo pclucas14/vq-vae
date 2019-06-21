@@ -29,7 +29,8 @@ parser.add_argument('--n_channels', type=int, default=128,      help='number of 
 parser.add_argument('--n_embeds', type=int, default=512,        help='number of embeddings in a codebook')
 parser.add_argument('--embed_dim', type=int, default=64,        help='size of an embedding in the codebook')
 
-parser.add_argument('--decay', type=float, default=0.99)
+parser.add_argument('--ema', type=int, default=0)
+parser.add_argument('--gamma', type=float, default=0.99)
 parser.add_argument('--commit_coef', type=float, default=0.5)
 args = parser.parse_args()
 args.input_size = (3, 32, 32)
@@ -87,10 +88,10 @@ for epoch in range(args.n_epochs):
 
     for batch_idx, (input,_) in enumerate(train_loader):
         input = input.cuda()
-        x, latent_loss = model(input)
+        x, loss_quant, loss_commit, _, _ = model(input)
 
         log_pxz = discretized_logistic(x, model.dec_log_stdv, sample=input).mean()
-        loss = -1 * (log_pxz / N) + args.commit_coef * latent_loss
+        loss = -1 * (log_pxz / N) + args.commit_coef * loss_quant + loss_commit
        
         elbo = - (KL - log_pxz) / N
         bpd  = elbo / np.log(2.)
@@ -102,7 +103,7 @@ for epoch in range(args.n_epochs):
         train_log['kl']         += [KL]
         train_log['bpd']        += [bpd.item()]
         train_log['elbo']       += [elbo.item()]
-        train_log['commit']     += [latent_loss.item()]
+        train_log['commit']     += [loss_quant.item()]
         train_log['log p(x|z)'] += [log_pxz.item()]
         
 
@@ -116,7 +117,7 @@ for epoch in range(args.n_epochs):
     with torch.no_grad():
         for batch_idx, (input,_) in enumerate(test_loader):
             input = input.cuda()
-            x, latent_loss = model(input)
+            x, loss_quant, loss_commit, _, _ = model(input)
 
             log_pxz = discretized_logistic(x, model.dec_log_stdv, sample=input).mean()
            
@@ -126,7 +127,7 @@ for epoch in range(args.n_epochs):
             test_log['kl']         += [KL]
             test_log['bpd']        += [bpd.item()]
             test_log['elbo']       += [elbo.item()]
-            test_log['commit']     += [latent_loss.item()]
+            test_log['commit']     += [loss_quant.item()]
             test_log['log p(x|z)'] += [log_pxz.item()]
             
         # save reconstructions
